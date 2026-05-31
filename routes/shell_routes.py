@@ -4,14 +4,24 @@ import asyncio
 import json
 import logging
 import os
-import pty
-import fcntl
 import shlex
 import shutil
 import uuid
 import tempfile
 from pathlib import Path
 from typing import Dict, Any
+
+# pty/fcntl are Unix-only (they pull in termios, which doesn't exist on
+# Windows). They're only needed for the optional use_pty streaming path, so
+# import them lazily and let the module load everywhere else.
+try:
+    import pty
+    import fcntl
+    _PTY_AVAILABLE = True
+except ImportError:
+    pty = None
+    fcntl = None
+    _PTY_AVAILABLE = False
 
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import StreamingResponse
@@ -380,6 +390,11 @@ def setup_shell_routes() -> APIRouter:
             )
 
         if use_pty:
+            if not _PTY_AVAILABLE:
+                async def no_pty():
+                    yield f"data: {json.dumps({'stream': 'stderr', 'data': 'PTY mode is not supported on this platform (Windows). Retry without use_pty.'})}\n\n"
+                    yield f"data: {json.dumps({'exit_code': -1})}\n\n"
+                return StreamingResponse(no_pty(), media_type="text/event-stream")
             return StreamingResponse(
                 _generate_pty(cmd, timeout, request),
                 media_type="text/event-stream",
